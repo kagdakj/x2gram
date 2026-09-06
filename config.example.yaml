@@ -1,0 +1,79 @@
+# ==============================================================================
+# Instagram Auto Uploader Configuration
+# ==============================================================================
+
+# 1. Instagram Authentication (via instagrapi)
+instagram:
+  username: ""                       # Your Instagram username
+  password: ""                       # Your Instagram password
+  session_id: ""                     # Or use sessionid cookie from web browser
+  session_file: "data/instagram_session.json"
+  proxy: ""                          # Optional: e.g. "http://user:pass@host:port"
+  verification_code: ""              # 2FA code (if required)
+  upload_timeout: 120
+
+# 2. Twitter / X Source (Fetches posts or reposts from Twitter/X)
+twitter:
+  enabled: false                     # Set true if monitoring Twitter/X reposts
+  username: ""                       # Twitter handle to monitor (without @)
+  auth_token: ""                     # Cookie: auth_token from x.com
+  ct0: ""                            # Cookie: ct0 from x.com
+  initial_load: 20                   # Max tweets to pull per check
+  only_reposts: true                 # Only upload retweets/reposts (like XActions)
+  binary_path: ""                    # Custom path to twitter binary if not in PATH
+
+# 3. Local Folder Source (Drag & drop anime images or albums into incoming/)
+local:
+  enabled: true                      # Enabled: drag photos or album folders into incoming/
+  watch_dir: "incoming"              # Directory to scan for photos/videos
+  move_to_processed: true            # Move files to processed_dir after successful upload
+  processed_dir: "data/processed"
+  default_caption: "#anime #illustration #animeart"
+
+# 4. Feature Plugins
+plugins:
+  # Anime Face-Preserving Smart Crop Plugin
+  anime_crop:
+    enabled: true
+    # Target aspect ratio:
+    #   "auto"    - Minimal crop: leaves images within [0.8, 1.91] untouched; crops only if outside
+    #   "4:5"     - Instagram portrait (0.8)
+    #   "1:1"     - Square (1.0)
+    #   "1.91:1"  - Landscape (1.91)
+    target_aspect_ratio: "auto"
+    model_type: "yolov3"             # "yolov3" (fast) or "faster-rcnn" (accurate)
+    device: "cpu"                    # "cpu" or "cuda"
+    confidence_threshold: 0.5        # Minimum detection score for anime face
+    padding_margin_pct: 0.15         # 15% safety headroom margin (preserves hair, ears, chin)
+    fallback_mode: "center"          # "center" or "smart_pad" when no anime face detected
+    pad_color: "black"               # "black", "white", or "blur" (for smart_pad)
+
+  # Caption Formatting & Credit Plugin
+  caption:
+    enabled: true
+    add_author_hashtag: true         # Append #AuthorName
+    add_source_link: true            # Append "Source: https://x.com/..."
+    custom_hashtags:
+      - "#anime"
+      - "#animeart"
+      - "#illustration"
+      - "#digitalart"
+      - "#fanart"
+    max_caption_length: 2200
+
+  # Watermark Plugin
+  watermark:
+    enabled: false
+    text: ""
+    image_path: ""
+    position: "bottom_right"
+    opacity: 0.7
+
+# 5. Core Service Loop
+service:
+  check_interval: 60                 # Seconds between checks (min 15)
+  post_delay: 5                      # Seconds to wait before uploading each post
+  db_path: "data/uploader.db"        # SQLite database path for tracking seen posts
+  temp_dir: "data/temp_media"        # Isolated temporary media storage
+  log_level: "INFO"                  # DEBUG, INFO, WARNING, ERROR
+  initial_skip: true                 # Skip existing posts on first run (create baseline)
