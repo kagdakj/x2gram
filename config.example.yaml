@@ -72,8 +72,13 @@ plugins:
 # 5. Core Service Loop
 service:
   check_interval: 60                 # Seconds between checks (min 15)
-  post_delay: 5                      # Seconds to wait before uploading each post
+  post_delay: 30                     # Seconds to wait before uploading each post (min 30s for anti-spam)
   db_path: "data/uploader.db"        # SQLite database path for tracking seen posts
   temp_dir: "data/temp_media"        # Isolated temporary media storage
   log_level: "INFO"                  # DEBUG, INFO, WARNING, ERROR
   initial_skip: true                 # Skip existing posts on first run (create baseline)
+
+  # Upload Rate Limiting & Scheduling (On/Off)
+  rate_limit_enabled: false          # Set true to enforce daily limits and time intervals
+  max_posts_per_day: 10              # Maximum posts allowed per 24 hours (e.g. 5-15)
+  min_post_interval: 3600            # Minimum seconds between consecutive uploads (e.g. 3600 = 1 hour, 7200 = 2 hours)

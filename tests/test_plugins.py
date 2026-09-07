@@ -22,16 +22,15 @@ def test_caption_formatting():
 
     caption = plugin.process_caption(post.text, post)
 
-    # Must contain author hashtag
+    # Must contain author hashtag and credit
     assert "#artist_chan" in caption
-    assert "@artist_chan" in caption
 
     # Must contain cleaned text without t.co
     assert "https://t.co" not in caption
     assert "Check out my new drawing!" in caption
 
-    # Must contain source link
-    assert "https://x.com/artist_chan/status/12345" in caption
+    # Must contain source link without http prefix to avoid link spam
+    assert "x.com/artist_chan/status/12345" in caption
 
     # Must contain custom hashtags
     assert "#anime" in caption

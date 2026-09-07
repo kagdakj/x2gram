@@ -38,25 +38,27 @@ class CaptionPlugin(BasePlugin):
         return text.strip()
 
     def process_caption(self, caption: str, post: Post) -> str:
-        """Construct a polished Instagram caption."""
+        """Construct a polished Instagram caption safe from spam filters."""
         lines = []
 
-        # 1. Author credit tag
-        author_tag = ""
+        # 1. Author credit tag (avoid raw @ mentions to prevent Instagram mention-spam blocking)
         if self.add_author_hashtag and post.author_username and post.author_username != "unknown":
             clean_author = re.sub(r"[^A-Za-z0-9_]", "", post.author_username)
-            if clean_author:
-                author_tag = f"#{clean_author}"
-                lines.append(f"Artist: {author_tag} (@{post.author_username})")
+            display_name = post.author_name if post.author_name and post.author_name != post.author_username else ""
+            if display_name and clean_author:
+                lines.append(f"Artist: {display_name} (#{clean_author}) on X")
+            elif clean_author:
+                lines.append(f"Artist: #{clean_author} (X: {post.author_username}) on X")
 
         # 2. Original text / quote
         raw_text = self.clean_text(post.text)
         if raw_text:
             lines.append(raw_text)
 
-        # 3. Source reference link
+        # 3. Source reference link (omit http:// scheme to avoid URL spam stripping on new accounts)
         if self.add_source_link and post.url:
-            lines.append(f"Source: {post.url}")
+            clean_url = re.sub(r"^https?://", "", post.url)
+            lines.append(f"Source: {clean_url}")
 
         # 4. Anime hashtags
         if self.custom_hashtags:

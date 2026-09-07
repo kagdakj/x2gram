@@ -83,11 +83,16 @@ class PluginsConfig(BaseModel):
 class ServiceConfig(BaseModel):
     """Main service loop settings."""
     check_interval: int = 60            # seconds between checks
-    post_delay: int = 5                 # delay in seconds before uploading each post
+    post_delay: int = 30                # delay in seconds before uploading each post
     db_path: str = "data/uploader.db"   # SQLite state database
     temp_dir: str = "data/temp_media"   # Temporary downloaded media storage
     log_level: str = "INFO"             # DEBUG, INFO, WARNING, ERROR
     initial_skip: bool = True           # Mark existing posts as seen on first start without posting
+
+    # Rate limiting & schedule controls
+    rate_limit_enabled: bool = False    # Set True to enable daily upload limits
+    max_posts_per_day: int = 10         # Maximum posts allowed within rolling 24 hours
+    min_post_interval: int = 3600       # Minimum seconds between uploads (e.g. 3600 = 1 hour)
 
 
 class AppConfig(BaseModel):

@@ -196,6 +196,20 @@ class AutoUploaderEngine:
                 logger.info("Successfully uploaded post %s (media_id: %s)", post.id, result.media_id)
                 self.state.mark_seen(post.id, post.source_name, status="uploaded")
                 self.state.increment_stat("published")
+
+                # If caption was stripped, increase delay for subsequent posts
+                if result.extra.get("caption_stripped"):
+                    old_delay = self.config.service.post_delay
+                    new_delay = max(60, old_delay * 2)
+                    self.config.service.post_delay = new_delay
+                    logger.warning(
+                        "⚠️ Caption was stripped by Instagram. Increasing post_delay from %ds to %ds "
+                        "to reduce spam detection risk.",
+                        old_delay, new_delay,
+                    )
+                    # Extra cooldown before next post
+                    logger.info("Applying extra cooldown (60s) after caption stripping...")
+                    await asyncio.sleep(60)
             else:
                 logger.error("Upload failed for post %s: %s", post.id, result.error_message)
                 self.state.increment_stat("errors")
@@ -240,6 +254,34 @@ class AutoUploaderEngine:
 
             uploaded_count = 0
             for post in unseen_posts:
+                # Rate limit checks (if enabled)
+                if self.config.service.rate_limit_enabled:
+                    # 1. Daily post limit check (rolling 24h)
+                    today_uploads = self.state.get_uploads_in_last_hours(24)
+                    if today_uploads >= self.config.service.max_posts_per_day:
+                        logger.warning(
+                            "🛑 Daily upload limit reached (%d/%d posts in last 24h). Skipping remaining %d posts.",
+                            today_uploads,
+                            self.config.service.max_posts_per_day,
+                            len(unseen_posts) - uploaded_count,
+                        )
+                        break
+
+                    # 2. Minimum interval between uploads check
+                    last_upload = self.state.get_last_upload_time()
+                    if last_upload:
+                        elapsed = time.time() - last_upload
+                        min_interval = self.config.service.min_post_interval
+                        if elapsed < min_interval:
+                            remaining_wait = int(min_interval - elapsed)
+                            logger.info(
+                                "⏳ Min post interval not met (%ds elapsed, %ds required). Next upload in %ds.",
+                                int(elapsed),
+                                min_interval,
+                                remaining_wait,
+                            )
+                            break
+
                 self.state.increment_stat("checked")
                 result = await self.process_and_upload(post)
                 if result.success:
@@ -254,6 +296,107 @@ class AutoUploaderEngine:
                 "uploaded": uploaded_count,
                 "baseline": False,
             }
+
+    async def sync_missing_posts(
+        self,
+        twitter_limit: int = 50,
+        ig_limit: int = 50,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Compare actual Instagram posts against X reposts and upload missing ones."""
+        import re
+        import sqlite3
+        from datetime import datetime, timezone
+
+        # 1. Ensure Instagram client and fetch actual media
+        uploader = self.uploader
+        if not hasattr(uploader, "_ensure_client"):
+            raise RuntimeError("Uploader does not support Instagram client access.")
+
+        cl = uploader._ensure_client()
+        user_id = cl.user_id_from_username(self.config.instagram.username)
+        logger.info("Fetching up to %d recent Instagram posts for @%s...", ig_limit, self.config.instagram.username)
+        medias = cl.user_medias(user_id, amount=ig_limit)
+
+        ig_tweet_ids = set()
+        for m in medias:
+            cap = m.caption_text or ""
+            matches = re.findall(r"(?:twitter\.com|x\.com)/[^/\s]+/status/(\d+)", cap)
+            for tid in matches:
+                ig_tweet_ids.add(tid)
+
+        # Fallback: Correlate with DB seen_posts timestamp matching for any Instagram post without parsed URL
+        db_posts = []
+        try:
+            con = sqlite3.connect(self.config.service.db_path)
+            cur = con.cursor()
+            db_posts = cur.execute("SELECT post_id, seen_at FROM seen_posts WHERE source='twitter'").fetchall()
+            con.close()
+        except Exception:
+            db_posts = []
+
+        if db_posts:
+            for m in medias:
+                cap = m.caption_text or ""
+                matches = re.findall(r"(?:twitter\.com|x\.com)/[^/\s]+/status/(\d+)", cap)
+                if not matches:
+                    m_ts = m.taken_at.timestamp()
+                    for pid, seen_at_str in db_posts:
+                        try:
+                            dt = datetime.strptime(seen_at_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                            if abs(m_ts - dt.timestamp()) < 25:
+                                ig_tweet_ids.add(pid)
+                                break
+                        except Exception:
+                            pass
+
+        logger.info("Found %d posts on Instagram, identified %d associated X tweet IDs.", len(medias), len(ig_tweet_ids))
+
+        # 2. Fetch X reposts from Twitter source
+        twitter_source = next((s for s in self.sources if s.name == "twitter"), None)
+        if not twitter_source:
+            raise RuntimeError("Twitter source is not enabled or configured.")
+
+        logger.info("Fetching up to %d reposts from Twitter @%s...", twitter_limit, self.config.twitter.username)
+        tweets = twitter_source.fetch_new_posts(limit=twitter_limit)
+
+        # 3. Compare to find missing reposts that have media
+        missing_posts = [
+            t for t in tweets
+            if t.id not in ig_tweet_ids and t.has_media
+        ]
+
+        # Upload in chronological order (oldest first)
+        missing_posts.reverse()
+
+        logger.info(
+            "Comparison complete: %d X reposts checked, %d missing from Instagram.",
+            len(tweets),
+            len(missing_posts),
+        )
+
+        uploaded_count = 0
+        failed_count = 0
+
+        if not dry_run:
+            for post in missing_posts:
+                logger.info("Uploading missing post %s (Author: %s)...", post.id, post.author_username)
+                result = await self.process_and_upload(post)
+                if result.success:
+                    uploaded_count += 1
+                else:
+                    failed_count += 1
+                    logger.error("Failed uploading missing post %s: %s", post.id, result.error_message)
+
+        return {
+            "ig_posts_scanned": len(medias),
+            "ig_tweet_ids_found": len(ig_tweet_ids),
+            "twitter_posts_scanned": len(tweets),
+            "missing_posts": missing_posts,
+            "uploaded_count": uploaded_count,
+            "failed_count": failed_count,
+            "dry_run": dry_run,
+        }
 
     async def run_loop(self) -> None:
         """Background continuous checking loop."""

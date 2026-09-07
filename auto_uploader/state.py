@@ -2,7 +2,7 @@
 
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 
 class StateStore:
@@ -130,6 +130,35 @@ class StateStore:
                 (key, count, count),
             )
             conn.commit()
+
+    def get_uploads_in_last_hours(self, hours: int = 24) -> int:
+        """Count how many posts were uploaded within the last N hours."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM seen_posts
+                WHERE status = 'uploaded'
+                AND datetime(seen_at) >= datetime('now', ?)
+                """,
+                (f"-{hours} hours",),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    def get_last_upload_time(self) -> Optional[float]:
+        """Get unix timestamp of the most recent successful upload."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT strftime('%s', seen_at) FROM seen_posts
+                WHERE status = 'uploaded'
+                ORDER BY seen_at DESC LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
 
     def reset_history(self) -> None:
         """Clear all seen posts and reinitialize baseline flag."""

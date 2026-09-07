@@ -40,3 +40,11 @@ def test_state_store_lifecycle():
         store.reset_history()
         assert not store.is_seen("tweet_100")
         assert not store.is_initialized()
+
+        # Rate limiting query tests
+        store.mark_seen("tweet_200", source="twitter", status="uploaded")
+        store.mark_seen("tweet_201", source="twitter", status="uploaded")
+        store.mark_seen("tweet_202", source="twitter", status="failed")
+
+        assert store.get_uploads_in_last_hours(24) == 2
+        assert store.get_last_upload_time() is not None

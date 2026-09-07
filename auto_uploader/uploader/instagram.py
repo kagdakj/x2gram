@@ -4,6 +4,7 @@ Docs reference: https://github.com/subzeroid/instagrapi/tree/master/docs/usage-g
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,14 +65,42 @@ class InstagramUploader(BaseUploader):
         try:
             if self.session_id:
                 logger.info("Logging into Instagram using session ID...")
-                cl.login_by_sessionid(self.session_id)
+                try:
+                    cl.login_by_sessionid(self.session_id)
+                except Exception as sess_err:
+                    if self.session_file.is_file():
+                        logger.warning("Session ID failed with cached session: %s. Clearing cache...", sess_err)
+                        self.session_file.unlink(missing_ok=True)
+                        cl = Client()
+                        if self.proxy:
+                            cl.set_proxy(self.proxy)
+                        cl.login_by_sessionid(self.session_id)
+                    else:
+                        raise sess_err
             elif self.username and self.password:
                 logger.info("Logging into Instagram as '%s'...", self.username)
-                cl.login(
-                    username=self.username,
-                    password=self.password,
-                    verification_code=self.verification_code,
-                )
+                try:
+                    cl.login(
+                        username=self.username,
+                        password=self.password,
+                        verification_code=self.verification_code,
+                    )
+                except Exception as login_err:
+                    # If old session belonged to another account or is expired, clear and retry fresh
+                    if self.session_file.is_file():
+                        logger.warning("Login failed with cached session (%s). Clearing old session and retrying fresh...", login_err)
+                        self.session_file.unlink(missing_ok=True)
+                        cl = Client()
+                        if self.proxy:
+                            cl.set_proxy(self.proxy)
+                        cl.login(
+                            username=self.username,
+                            password=self.password,
+                            verification_code=self.verification_code,
+                        )
+                    else:
+                        raise login_err
+
                 cl.dump_settings(str(self.session_file))
             else:
                 raise ValueError(
@@ -140,43 +169,89 @@ class InstagramUploader(BaseUploader):
             )
 
         try:
+            media_obj = None
             # Case 1: Multiple items -> Album (Carousel)
             if len(all_paths) > 1:
                 logger.info("Uploading album with %d items for post %s...", len(all_paths), post.id)
-                media = cl.album_upload(
+                media_obj = cl.album_upload(
                     paths=all_paths,
                     caption=caption,
                 )
-                media_id = str(media.id if hasattr(media, "id") else media.pk)
-                return UploadResult(success=True, media_id=media_id)
 
             # Case 2: Single Photo
-            if len(photo_paths) == 1 and not video_paths:
+            elif len(photo_paths) == 1 and not video_paths:
                 logger.info("Uploading single photo for post %s...", post.id)
-                media = cl.photo_upload(
+                media_obj = cl.photo_upload(
                     path=photo_paths[0],
                     caption=caption,
                 )
-                media_id = str(media.id if hasattr(media, "id") else media.pk)
-                return UploadResult(success=True, media_id=media_id)
 
             # Case 3: Single Video (Clip / Reel / Video)
-            if len(video_paths) == 1:
+            elif len(video_paths) == 1:
                 logger.info("Uploading video for post %s...", post.id)
                 try:
-                    media = cl.clip_upload(
+                    media_obj = cl.clip_upload(
                         path=video_paths[0],
                         caption=caption,
                     )
                 except Exception:
-                    media = cl.video_upload(
+                    media_obj = cl.video_upload(
                         path=video_paths[0],
                         caption=caption,
                     )
-                media_id = str(media.id if hasattr(media, "id") else media.pk)
-                return UploadResult(success=True, media_id=media_id)
+            else:
+                return UploadResult(success=False, error_message="Unsupported media combination.")
 
-            return UploadResult(success=False, error_message="Unsupported media combination.")
+            media_id = str(media_obj.id if hasattr(media_obj, "id") else media_obj.pk)
+
+            # Detect if Instagram accepted media upload but stripped the caption
+            actual_caption = getattr(media_obj, "caption_text", None)
+            if caption.strip() and not actual_caption:
+                logger.warning(
+                    "⚠️ Instagram uploaded media %s (PK: %s) but silently stripped caption. "
+                    "Attempting to restore via media_edit...",
+                    post.id,
+                    media_id,
+                )
+
+                # Retry: push caption back via media_edit with backoff
+                caption_restored = False
+                for attempt, wait in enumerate([5, 15, 30], 1):
+                    try:
+                        time.sleep(wait)
+                        cl.media_edit(media_id, caption)
+                        # Verify it stuck
+                        edited = cl.media_info(int(media_id))
+                        if (edited.caption_text or "").strip():
+                            logger.info(
+                                "✅ Caption restored on attempt %d for PK %s via media_edit.",
+                                attempt, media_id,
+                            )
+                            caption_restored = True
+                            break
+                        else:
+                            logger.warning(
+                                "media_edit attempt %d accepted but caption still empty for PK %s.",
+                                attempt, media_id,
+                            )
+                    except Exception as edit_err:
+                        logger.warning(
+                            "media_edit attempt %d failed for PK %s: %s",
+                            attempt, media_id, edit_err,
+                        )
+                        if "feedback_required" in str(edit_err).lower():
+                            logger.error(
+                                "🛑 Instagram action block active. Stopping caption retry."
+                            )
+                            break
+
+                return UploadResult(
+                    success=True,
+                    media_id=media_id,
+                    extra={"caption_stripped": not caption_restored, "caption_restored": caption_restored},
+                )
+
+            return UploadResult(success=True, media_id=media_id)
 
         except Exception as e:
             logger.error("Instagram upload failed for post %s: %s", post.id, e, exc_info=True)
