@@ -24,7 +24,8 @@ class TwitterSourceConfig(BaseModel):
     username: str = ""
     auth_token: str = ""
     ct0: str = ""
-    initial_load: int = 20
+    initial_load: int = 200
+    poll_limit: int = 20
     only_reposts: bool = True
     binary_path: Optional[str] = None
 

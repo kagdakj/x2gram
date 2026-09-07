@@ -52,10 +52,58 @@ def cmd_check(args: argparse.Namespace) -> None:
     engine = AutoUploaderEngine(cfg)
     result = asyncio.run(engine.check())
     print("\n--- Check Summary ---")
-    print(f"Total posts retrieved : {result['total']}")
-    print(f"New posts found        : {result['found']}")
+    print(f"Total posts polled     : {result['total']}")
+    print(f"Newly queued           : {result.get('queued', 0)}")
+    print(f"Pending in queue       : {result.get('pending', 0)}")
     print(f"Uploaded to Instagram  : {result['uploaded']}")
     print(f"Baseline established   : {'Yes' if result['baseline'] else 'No'}\n")
+
+
+def cmd_seed(args: argparse.Namespace) -> None:
+    """Deep fetch from all sources and populate upload queue."""
+    cfg = AppConfig.load(args.config)
+    engine = AutoUploaderEngine(cfg)
+    print(f"\n🌱 Seeding queue (fetching up to {cfg.twitter.initial_load} posts from Twitter)...")
+    result = asyncio.run(engine.seed())
+    print(f"\n--- Seed Summary ---")
+    print(f"Posts fetched          : {result['fetched']}")
+    print(f"Newly queued           : {result['queued']}")
+    print(f"Total pending in queue : {result['pending']}\n")
+
+
+def cmd_queue(args: argparse.Namespace) -> None:
+    """Show or manage the upload queue."""
+    cfg = AppConfig.load(args.config)
+    engine = AutoUploaderEngine(cfg)
+
+    action = getattr(args, "action", "show")
+
+    if action == "clear":
+        status_filter = getattr(args, "status", None)
+        count = engine.state.clear_queue(status=status_filter)
+        label = f"'{status_filter}'" if status_filter else "all"
+        print(f"🗑️  Cleared {count} {label} queue entries.\n")
+        return
+
+    # Show queue
+    status_filter = getattr(args, "status", None)
+    rows = engine.state.get_queue_all(status=status_filter)
+
+    if not rows:
+        print(f"\n📭 Queue is empty{' (filter: ' + status_filter + ')' if status_filter else ''}.\n")
+        return
+
+    print(f"\n--- Upload Queue ({len(rows)} entries) ---")
+    print(f"{'#':<5} {'Post ID':<22} {'Status':<10} {'Source':<10} {'Added'}")
+    print("-" * 75)
+    for i, row in enumerate(rows, 1):
+        print(f"{i:<5} {row['post_id']:<22} {row['status']:<10} {row['source_name']:<10} {row['added_at']}")
+
+    # Stats
+    pending = engine.state.queue_size("pending")
+    done = engine.state.queue_size("done")
+    failed = engine.state.queue_size("failed")
+    print(f"\nPending: {pending} | Done: {done} | Failed: {failed}\n")
 
 
 def cmd_test(args: argparse.Namespace) -> None:
@@ -492,6 +540,18 @@ def main():
         help="Upload existing posts without skipping baseline",
     )
 
+    # seed
+    subparsers.add_parser("seed", help="Deep fetch from Twitter and populate upload queue (run once)")
+
+    # queue
+    queue_parser = subparsers.add_parser("queue", help="Show or manage the upload queue")
+    queue_sub = queue_parser.add_subparsers(dest="action")
+    queue_sub.default = "show"
+    queue_show = queue_sub.add_parser("show", help="Display queue entries")
+    queue_show.add_argument("--status", choices=["pending", "done", "failed"], help="Filter by status")
+    queue_clear = queue_sub.add_parser("clear", help="Clear queue entries")
+    queue_clear.add_argument("--status", choices=["pending", "done", "failed"], help="Only clear entries with this status")
+
     # test
     subparsers.add_parser("test", help="Test Instagram and source connections")
 
@@ -617,6 +677,8 @@ def main():
         "start": cmd_start,
         "watch": cmd_watch,
         "check": cmd_check,
+        "seed": cmd_seed,
+        "queue": cmd_queue,
         "test": cmd_test,
         "crop": cmd_crop,
         "stats": cmd_stats,

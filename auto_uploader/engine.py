@@ -1,6 +1,7 @@
 """Core orchestration service for Instagram Auto Uploader."""
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -219,16 +220,104 @@ class AutoUploaderEngine:
         finally:
             self._cleanup_post_temp_dir(post_dir)
 
+    # ── Post serialization for queue ───────────────────────────────────────
+
+    @staticmethod
+    def _post_to_json(post: Post) -> str:
+        """Serialize a Post to JSON string for queue storage."""
+        media_dicts = []
+        for m in post.media_items:
+            media_dicts.append({
+                "url": m.url,
+                "media_type": m.media_type.value,
+                "width": m.width,
+                "height": m.height,
+            })
+        return json.dumps({
+            "id": post.id,
+            "source_name": post.source_name,
+            "author_username": post.author_username,
+            "author_name": post.author_name,
+            "text": post.text,
+            "caption": post.caption,
+            "url": post.url,
+            "is_repost": post.is_repost,
+            "created_at": post.created_at,
+            "media_items": media_dicts,
+            "raw_data": post.raw_data,
+        }, ensure_ascii=False)
+
+    @staticmethod
+    def _post_from_json(json_str: str) -> Post:
+        """Deserialize a Post from queue JSON string."""
+        d = json.loads(json_str)
+        media_items = []
+        for m in d.get("media_items", []):
+            media_items.append(MediaItem(
+                url=m.get("url"),
+                media_type=MediaType(m.get("media_type", "photo")),
+                width=m.get("width"),
+                height=m.get("height"),
+            ))
+        return Post(
+            id=d["id"],
+            source_name=d.get("source_name", "twitter"),
+            author_username=d.get("author_username", "unknown"),
+            author_name=d.get("author_name", "Unknown"),
+            text=d.get("text", ""),
+            caption=d.get("caption", ""),
+            url=d.get("url"),
+            media_items=media_items,
+            is_repost=d.get("is_repost", False),
+            created_at=d.get("created_at"),
+            raw_data=d.get("raw_data", {}),
+        )
+
+    # ── Queue management ──────────────────────────────────────────────────
+
+    def _enqueue_new_posts(self, posts: List[Post]) -> int:
+        """Filter unseen posts with media and add to queue. Returns count added."""
+        items = []
+        for p in posts:
+            if not p.has_media:
+                continue
+            if self.state.is_seen(p.id):
+                continue
+            if self.state.queue_has(p.id):
+                continue
+            items.append((p.id, p.source_name, self._post_to_json(p)))
+        return self.state.enqueue_batch(items)
+
+    async def seed(self) -> Dict[str, Any]:
+        """One-time deep fetch: pull initial_load posts and populate queue with all unseen."""
+        all_posts: List[Post] = []
+        for source in self.sources:
+            try:
+                if source.name == "twitter":
+                    limit = getattr(self.config.twitter, "initial_load", 200) or 200
+                    posts = source.fetch_new_posts(limit=limit)
+                else:
+                    posts = source.fetch_new_posts()
+                all_posts.extend(posts)
+            except Exception as e:
+                logger.error("Source '%s' seed fetch error: %s", source.name, e)
+
+        added = self._enqueue_new_posts(all_posts)
+        pending = self.state.queue_size("pending")
+        logger.info("Seed complete: fetched %d posts, queued %d new, %d total pending.", len(all_posts), added, pending)
+        return {"fetched": len(all_posts), "queued": added, "pending": pending}
+
     async def check(self) -> Dict[str, Any]:
-        """Perform one poll across all sources and process new posts."""
+        """Two-phase check: 1) light poll → queue new posts, 2) pop queue → upload."""
         async with self._check_lock:
+            # ── Phase 1: Poll sources lightly, queue new posts ──
             all_candidate_posts: List[Post] = []
 
             for source in self.sources:
                 try:
                     if source.name == "twitter":
-                        tw_limit = getattr(self.config.twitter, "initial_load", 200) or 200
-                        posts = source.fetch_new_posts(limit=tw_limit)
+                        poll_limit = getattr(self.config.twitter, "poll_limit", 20) or 20
+                        posts = source.fetch_new_posts(limit=poll_limit)
                     else:
                         posts = source.fetch_new_posts()
                     all_candidate_posts.extend(posts)
@@ -236,68 +325,88 @@ class AutoUploaderEngine:
                     logger.error("Source '%s' fetch error: %s", source.name, e)
                     self.state.increment_stat("errors")
 
-            if not all_candidate_posts:
-                return {"total": 0, "found": 0, "uploaded": 0, "baseline": False}
-
             # Handle initial baseline setup
-            # Note: baseline skip only applies to remote sources (e.g. Twitter backlog).
-            # Local folder drag-and-drop posts are always uploaded immediately.
             if not self.state.is_initialized() and self.config.service.initial_skip:
                 remote_ids = [p.id for p in all_candidate_posts if p.source_name != "local"]
                 if remote_ids:
                     self.state.mark_seen_batch(remote_ids, source="baseline")
                     self.state.increment_stat("checked", len(remote_ids))
-                    logger.info("Baseline initialized with %d remote posts. Old remote posts will not be uploaded.", len(remote_ids))
+                    logger.info("Baseline initialized with %d remote posts.", len(remote_ids))
                 self.state.set_initialized(True)
+                return {"total": len(all_candidate_posts), "found": 0, "uploaded": 0, "queued": 0, "baseline": True}
 
-            # Find unseen posts with media
-            unseen_posts = [p for p in all_candidate_posts if not self.state.is_seen(p.id) and p.has_media]
+            # Queue any new posts discovered
+            newly_queued = self._enqueue_new_posts(all_candidate_posts)
+            if newly_queued > 0:
+                logger.info("Queued %d new post(s) for upload.", newly_queued)
 
-            # Sort oldest-first by Twitter Snowflake ID (strictly chronological)
-            unseen_posts.sort(key=lambda p: int(p.id) if p.id.isdigit() else 0)
+            # ── Phase 2: Pop from queue and upload ──
+            pending_count = self.state.queue_size("pending")
+            if pending_count == 0:
+                return {"total": len(all_candidate_posts), "found": 0, "uploaded": 0, "queued": newly_queued, "baseline": False}
 
+            # Pop one at a time for rate-limit compliance
+            pending_rows = self.state.pop_pending(limit=10)
             uploaded_count = 0
-            for post in unseen_posts:
-                # Rate limit checks (if enabled)
+
+            for row in pending_rows:
+                post_id = row["post_id"]
+                post_json = row["post_json"]
+
+                # Skip if already seen (uploaded between seed and now)
+                if self.state.is_seen(post_id):
+                    self.state.mark_queue_status(post_id, "done")
+                    continue
+
+                # Rate limit checks
                 if self.config.service.rate_limit_enabled:
-                    # 1. Daily post limit check (rolling 24h)
                     today_uploads = self.state.get_uploads_in_last_hours(24)
                     if today_uploads >= self.config.service.max_posts_per_day:
                         logger.warning(
-                            "🛑 Daily upload limit reached (%d/%d posts in last 24h). Skipping remaining %d posts.",
-                            today_uploads,
-                            self.config.service.max_posts_per_day,
-                            len(unseen_posts) - uploaded_count,
+                            "🛑 Daily upload limit reached (%d/%d). Stopping.",
+                            today_uploads, self.config.service.max_posts_per_day,
                         )
                         break
 
-                    # 2. Minimum interval between uploads check
                     last_upload = self.state.get_last_upload_time()
                     if last_upload:
                         elapsed = time.time() - last_upload
                         min_interval = self.config.service.min_post_interval
                         if elapsed < min_interval:
-                            remaining_wait = int(min_interval - elapsed)
                             logger.info(
-                                "⏳ Min post interval not met (%ds elapsed, %ds required). Next upload in %ds.",
-                                int(elapsed),
-                                min_interval,
-                                remaining_wait,
+                                "⏳ Min interval not met (%ds/%ds). Next upload in %ds.",
+                                int(elapsed), min_interval, int(min_interval - elapsed),
                             )
                             break
 
+                # Deserialize and upload
+                try:
+                    post = self._post_from_json(post_json)
+                except Exception as e:
+                    logger.error("Failed to deserialize queued post %s: %s", post_id, e)
+                    self.state.mark_queue_status(post_id, "failed")
+                    continue
+
                 self.state.increment_stat("checked")
                 result = await self.process_and_upload(post)
+
                 if result.success:
                     uploaded_count += 1
+                    self.state.mark_queue_status(post_id, "done")
+                else:
+                    self.state.mark_queue_status(post_id, "failed")
 
-                # Small breather between consecutive posts
                 await asyncio.sleep(1.0)
+
+            remaining = self.state.queue_size("pending")
+            logger.info("Check complete: %d uploaded, %d still pending in queue.", uploaded_count, remaining)
 
             return {
                 "total": len(all_candidate_posts),
-                "found": len(unseen_posts),
+                "found": len(pending_rows),
                 "uploaded": uploaded_count,
+                "queued": newly_queued,
+                "pending": remaining,
                 "baseline": False,
             }
 

@@ -31,6 +31,16 @@ class StateStore:
                 )
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS upload_queue (
+                    post_id TEXT PRIMARY KEY,
+                    source_name TEXT NOT NULL,
+                    post_json TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS state_kv (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -167,3 +177,100 @@ class StateStore:
             cursor.execute("DELETE FROM seen_posts")
             cursor.execute("DELETE FROM state_kv WHERE key = 'initialized'")
             conn.commit()
+
+    # ── Upload Queue Methods ──────────────────────────────────────────────
+
+    def queue_has(self, post_id: str) -> bool:
+        """Check if post is already in upload queue (any status)."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM upload_queue WHERE post_id = ?", (str(post_id),))
+            return cursor.fetchone() is not None
+
+    def enqueue_post(self, post_id: str, source_name: str, post_json: str) -> bool:
+        """Add a post to queue. Returns True if newly inserted, False if already exists."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO upload_queue (post_id, source_name, post_json) VALUES (?, ?, ?)",
+                (str(post_id), source_name, post_json),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def enqueue_batch(self, items: list) -> int:
+        """Bulk enqueue. items = list of (post_id, source_name, post_json). Returns count inserted."""
+        if not items:
+            return 0
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                "INSERT OR IGNORE INTO upload_queue (post_id, source_name, post_json) VALUES (?, ?, ?)",
+                [(str(pid), src, pj) for pid, src, pj in items],
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def pop_pending(self, limit: int = 1) -> list:
+        """Get oldest pending queue entries (FIFO by Snowflake ID). Returns list of sqlite3.Row."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # Sort by numeric post_id (Twitter Snowflake = chronological)
+            cursor.execute(
+                """
+                SELECT post_id, source_name, post_json, added_at
+                FROM upload_queue
+                WHERE status = 'pending'
+                ORDER BY CAST(post_id AS INTEGER) ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return cursor.fetchall()
+
+    def mark_queue_status(self, post_id: str, status: str) -> None:
+        """Update queue entry status (e.g. 'done', 'failed')."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE upload_queue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE post_id = ?",
+                (status, str(post_id)),
+            )
+            conn.commit()
+
+    def queue_size(self, status: str = "pending") -> int:
+        """Count queue entries by status."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM upload_queue WHERE status = ?",
+                (status,),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    def get_queue_all(self, status: str = None) -> list:
+        """Get all queue entries, optionally filtered by status."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute(
+                    "SELECT post_id, source_name, post_json, status, added_at FROM upload_queue WHERE status = ? ORDER BY CAST(post_id AS INTEGER) ASC",
+                    (status,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT post_id, source_name, post_json, status, added_at FROM upload_queue ORDER BY CAST(post_id AS INTEGER) ASC"
+                )
+            return cursor.fetchall()
+
+    def clear_queue(self, status: str = None) -> int:
+        """Delete queue entries. If status given, only that status. Returns count deleted."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute("DELETE FROM upload_queue WHERE status = ?", (status,))
+            else:
+                cursor.execute("DELETE FROM upload_queue")
+            conn.commit()
+            return cursor.rowcount
