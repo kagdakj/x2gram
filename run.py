@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from typing import List, Optional
 
 from auto_uploader.config import AppConfig
 from auto_uploader.engine import AutoUploaderEngine
@@ -320,8 +321,36 @@ def cmd_fix_captions(args: argparse.Namespace) -> None:
     print(f"Repaired: {fixed_count} | Skipped/Unmatched: {skipped_count}\n")
 
 
+def parse_selection(input_str: str, max_val: int) -> List[int]:
+    """Parse selection string like '1,3,5-8' into 1-based indices."""
+    input_str = input_str.strip().lower()
+    if not input_str or input_str in ("all", "a", "*"):
+        return list(range(1, max_val + 1))
+    if input_str in ("q", "quit", "exit", "n", "no"):
+        return []
+
+    selected = set()
+    parts = input_str.split(",")
+    for part in parts:
+        part = part.strip()
+        if "-" in part:
+            sub = part.split("-")
+            if len(sub) == 2 and sub[0].strip().isdigit() and sub[1].strip().isdigit():
+                start = int(sub[0].strip())
+                end = int(sub[1].strip())
+                for i in range(min(start, end), max(start, end) + 1):
+                    if 1 <= i <= max_val:
+                        selected.add(i)
+        elif part.isdigit():
+            val = int(part)
+            if 1 <= val <= max_val:
+                selected.add(val)
+
+    return sorted(list(selected))
+
+
 def cmd_sync(args: argparse.Namespace) -> None:
-    """Compare actual Instagram posts against X reposts and upload missing ones."""
+    """Compare actual Instagram posts against X reposts and select which ones to upload."""
     cfg = AppConfig.load(args.config)
     engine = AutoUploaderEngine(cfg)
 
@@ -329,37 +358,95 @@ def cmd_sync(args: argparse.Namespace) -> None:
     ig_limit = getattr(args, "limit", 50)
     tw_limit = getattr(args, "twitter_limit", 50)
     dry_run = getattr(args, "dry_run", False)
+    upload_all = getattr(args, "all", False)
+    cli_select = getattr(args, "select", None)
 
+    # First pass: dry-run to discover missing posts
     try:
         summary = asyncio.run(
             engine.sync_missing_posts(
                 twitter_limit=tw_limit,
                 ig_limit=ig_limit,
-                dry_run=dry_run,
+                dry_run=True,
             )
         )
     except Exception as e:
         print(f"❌ Sync failed: {e}")
         return
 
-    print("\n--- Sync Summary ---")
+    missing = summary["missing_posts"]
+
+    print("\n--- Sync Scan Results ---")
     print(f"• Instagram posts inspected: {summary['ig_posts_scanned']}")
     print(f"• Unique X tweet IDs verified on Instagram: {summary['ig_tweet_ids_found']}")
     print(f"• X reposts fetched: {summary['twitter_posts_scanned']}")
-    print(f"• Missing posts detected: {len(summary['missing_posts'])}")
+    print(f"• Missing posts detected: {len(missing)}")
 
-    if summary["missing_posts"]:
-        print("\nMissing Posts:")
-        for idx, p in enumerate(summary["missing_posts"], 1):
-            txt = (p.text or "").replace("\n", " ")[:60]
-            print(f"  {idx}. ID: {p.id} | Artist: @{p.author_username} | Media: {len(p.media_items)} | {txt}")
+    if not missing:
+        print("\n🎉 All X reposts are already uploaded to Instagram. Nothing to sync!\n")
+        return
+
+    print("\nMissing Posts:")
+    for idx, p in enumerate(missing, 1):
+        m_type_summary = f"{len(p.media_items)} media"
+        if p.media_items:
+            m_types = [m.media_type.value for m in p.media_items]
+            m_type_summary = f"{len(p.media_items)} {m_types[0]}"
+        txt = (p.text or "").replace("\n", " ")[:50]
+        print(f"  [{idx:2d}] ID: {p.id} | @{p.author_username:<15} ({m_type_summary:<8}) | {txt}")
 
     if dry_run:
-        print("\n💡 Dry-run mode enabled: No posts were uploaded.")
-        print("   To upload these missing posts, run: python run.py sync")
+        print("\n💡 Dry-run mode: No posts were uploaded.")
+        print("   To select and upload, run: python run.py sync")
+        print()
+        return
+
+    # Determine which items to upload
+    selected_indices: List[int] = []
+
+    if cli_select is not None:
+        selected_indices = parse_selection(cli_select, len(missing))
+    elif upload_all:
+        selected_indices = list(range(1, len(missing) + 1))
     else:
-        print(f"\n✅ Uploaded: {summary['uploaded_count']} | Failed: {summary['failed_count']}")
-    print()
+        # Batch selection menu
+        print("\n" + "=" * 55)
+        print("📋 Batch Selection Menu:")
+        print("   • 'all' / 'a'      : Upload all missing posts")
+        print("   • '1,3,5'          : Upload specific numbers")
+        print("   • '1-5'            : Upload range of numbers")
+        print("   • '1-3, 5, 8-10'   : Combined ranges and numbers")
+        print("   • 'q' / 'quit'     : Cancel / do nothing")
+        print("=" * 55)
+
+        try:
+            choice = input(f"\nEnter selection to upload [1-{len(missing)} or 'all'] (q to quit): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return
+
+        selected_indices = parse_selection(choice, len(missing))
+
+    if not selected_indices:
+        print("\nNo posts selected for upload. Operation cancelled.\n")
+        return
+
+    selected_ids = [missing[i - 1].id for i in selected_indices]
+    print(f"\n🚀 Proceeding to upload {len(selected_ids)} selected post(s)...")
+
+    # Run upload on selected IDs
+    try:
+        upload_summary = asyncio.run(
+            engine.sync_missing_posts(
+                twitter_limit=tw_limit,
+                ig_limit=ig_limit,
+                dry_run=False,
+                selected_ids=selected_ids,
+            )
+        )
+        print(f"\n✅ Uploaded: {upload_summary['uploaded_count']} | Failed: {upload_summary['failed_count']}\n")
+    except Exception as e:
+        print(f"\n❌ Upload execution failed: {e}\n")
 
 
 def cmd_plugins(args: argparse.Namespace) -> None:
@@ -499,6 +586,25 @@ def main():
         "--dry-run",
         action="store_true",
         help="Detect and list missing posts without uploading them",
+    )
+    sync_parser.add_argument(
+        "--all",
+        "-a",
+        action="store_true",
+        help="Upload all missing posts without interactive prompt",
+    )
+    sync_parser.add_argument(
+        "--select",
+        "-s",
+        type=str,
+        default=None,
+        help="Specific indices or ranges to upload (e.g. '1,3,5' or '1-5')",
+    )
+    sync_parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        help="Always show interactive batch selection menu",
     )
 
     args = parser.parse_args()

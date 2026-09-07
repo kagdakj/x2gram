@@ -302,6 +302,7 @@ class AutoUploaderEngine:
         twitter_limit: int = 50,
         ig_limit: int = 50,
         dry_run: bool = False,
+        selected_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Compare actual Instagram posts against X reposts and upload missing ones."""
         import re
@@ -375,11 +376,16 @@ class AutoUploaderEngine:
             len(missing_posts),
         )
 
+        posts_to_upload = missing_posts
+        if selected_ids is not None:
+            sel_set = set(selected_ids)
+            posts_to_upload = [p for p in missing_posts if p.id in sel_set]
+
         uploaded_count = 0
         failed_count = 0
 
         if not dry_run:
-            for post in missing_posts:
+            for post in posts_to_upload:
                 logger.info("Uploading missing post %s (Author: %s)...", post.id, post.author_username)
                 result = await self.process_and_upload(post)
                 if result.success:
@@ -393,6 +399,7 @@ class AutoUploaderEngine:
             "ig_tweet_ids_found": len(ig_tweet_ids),
             "twitter_posts_scanned": len(tweets),
             "missing_posts": missing_posts,
+            "posts_to_upload": posts_to_upload,
             "uploaded_count": uploaded_count,
             "failed_count": failed_count,
             "dry_run": dry_run,

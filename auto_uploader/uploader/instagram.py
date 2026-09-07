@@ -156,10 +156,11 @@ class InstagramUploader(BaseUploader):
         for item in post.media_items:
             if not item.is_valid_local:
                 continue
-            if item.media_type == MediaType.PHOTO:
-                photo_paths.append(self._ensure_jpeg(item.local_path))
-            elif item.media_type == MediaType.VIDEO:
+            ext = item.local_path.suffix.lower()
+            if item.media_type == MediaType.VIDEO or ext in (".mp4", ".mov", ".avi", ".webm"):
                 video_paths.append(item.local_path)
+            else:
+                photo_paths.append(self._ensure_jpeg(item.local_path))
 
         all_paths = photo_paths + video_paths
         if not all_paths:

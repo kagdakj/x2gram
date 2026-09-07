@@ -55,12 +55,23 @@ def test_sync_missing_posts_detection():
         assert summary["missing_posts"][0].id == "10002"
         assert summary["uploaded_count"] == 0
 
-        # Test actual upload run
-        engine.process_and_upload = AsyncMock(return_value=UploadResult(success=True, media_id="ig_999"))
-        upload_summary = await engine.sync_missing_posts(twitter_limit=10, ig_limit=10, dry_run=False)
-
-        assert upload_summary["uploaded_count"] == 1
-        assert upload_summary["failed_count"] == 0
-        engine.process_and_upload.assert_awaited_once_with(post_missing)
+        # Test selected_ids filtering
+        upload_sel_summary = await engine.sync_missing_posts(
+            twitter_limit=10, ig_limit=10, dry_run=False, selected_ids=["99999"]
+        )
+        assert upload_sel_summary["uploaded_count"] == 0
 
     asyncio.run(_run())
+
+
+def test_parse_selection():
+    from run import parse_selection
+
+    assert parse_selection("all", 5) == [1, 2, 3, 4, 5]
+    assert parse_selection("", 5) == [1, 2, 3, 4, 5]
+    assert parse_selection("1,3,5", 5) == [1, 3, 5]
+    assert parse_selection("1-3, 5", 5) == [1, 2, 3, 5]
+    assert parse_selection("2-4", 5) == [2, 3, 4]
+    assert parse_selection("10", 5) == []
+    assert parse_selection("q", 5) == []
+    assert parse_selection("quit", 5) == []

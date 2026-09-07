@@ -155,14 +155,20 @@ class TwitterCliSource(BaseSource):
             for m in item.get("media", []):
                 if not isinstance(m, dict):
                     continue
-                m_type_str = m.get("type")
+                m_type_str = str(m.get("type") or "").lower()
                 m_url = m.get("url")
                 if not m_url:
                     continue
 
-                m_type = MediaType.PHOTO if m_type_str == "photo" else (
-                    MediaType.VIDEO if m_type_str == "video" else MediaType.UNKNOWN
-                )
+                if m_type_str in ("video", "animated_gif"):
+                    m_type = MediaType.VIDEO
+                elif m_type_str in ("photo", "image"):
+                    m_type = MediaType.PHOTO
+                elif ".mp4" in m_url.lower() or "video" in m_url.lower():
+                    m_type = MediaType.VIDEO
+                else:
+                    m_type = MediaType.PHOTO
+
                 media_items.append(
                     MediaItem(
                         url=m_url,
