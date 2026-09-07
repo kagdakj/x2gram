@@ -101,7 +101,7 @@ class TwitterCliSource(BaseSource):
             logger.error("Twitter CLI connection test failed: %s", self.mask_secrets(str(e)))
             return False
 
-    def fetch_new_posts(self, limit: int = 20) -> List[Post]:
+    def fetch_new_posts(self, limit: int = None) -> List[Post]:
         """Fetch latest posts/reposts from target Twitter account."""
         max_posts = max(1, limit or self.initial_load)
         stdout, _ = self._run_cli(

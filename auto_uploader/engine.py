@@ -226,7 +226,11 @@ class AutoUploaderEngine:
 
             for source in self.sources:
                 try:
-                    posts = source.fetch_new_posts()
+                    if source.name == "twitter":
+                        tw_limit = getattr(self.config.twitter, "initial_load", 200) or 200
+                        posts = source.fetch_new_posts(limit=tw_limit)
+                    else:
+                        posts = source.fetch_new_posts()
                     all_candidate_posts.extend(posts)
                 except Exception as e:
                     logger.error("Source '%s' fetch error: %s", source.name, e)
@@ -246,11 +250,11 @@ class AutoUploaderEngine:
                     logger.info("Baseline initialized with %d remote posts. Old remote posts will not be uploaded.", len(remote_ids))
                 self.state.set_initialized(True)
 
-            # Find unseen posts
-            unseen_posts = [p for p in all_candidate_posts if not self.state.is_seen(p.id)]
+            # Find unseen posts with media
+            unseen_posts = [p for p in all_candidate_posts if not self.state.is_seen(p.id) and p.has_media]
 
-            # Process oldest first
-            unseen_posts.reverse()
+            # Sort oldest-first by Twitter Snowflake ID (strictly chronological)
+            unseen_posts.sort(key=lambda p: int(p.id) if p.id.isdigit() else 0)
 
             uploaded_count = 0
             for post in unseen_posts:
