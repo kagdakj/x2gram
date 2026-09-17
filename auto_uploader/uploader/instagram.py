@@ -34,7 +34,7 @@ class InstagramUploader(BaseUploader):
         self._logged_in = False
 
     def _ensure_client(self) -> Any:
-        """Initialize instagrapi Client with session persistence."""
+        """Initialize instagrapi Client with session persistence without repeated logins."""
         if self.client and self._logged_in:
             return self.client
 
@@ -53,67 +53,54 @@ class InstagramUploader(BaseUploader):
 
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # 1. Try loading existing session
+        # 1. Try restoring existing session without calling login API
         if self.session_file.is_file():
             try:
                 logger.info("Loading saved Instagram session from %s", self.session_file)
                 cl.load_settings(str(self.session_file))
-            except Exception as e:
-                logger.warning("Failed to load existing session: %s. Proceeding to fresh login.", e)
+                # Validate session with a lightweight endpoint call
+                cl.get_timeline_feed()
+                logger.info("✅ Session restored and validated for @%s (skipped login API call).", self.username or "cached session")
+                self.client = cl
+                self._logged_in = True
+                return self.client
+            except Exception as session_err:
+                logger.warning("Cached session is invalid or expired (%s). Performing fresh login...", session_err)
+                self.session_file.unlink(missing_ok=True)
+                cl = Client()
+                if self.proxy:
+                    cl.set_proxy(self.proxy)
 
-        # 2. Authenticate
+        # 2. Authenticate ONLY when cached session is missing or expired
         try:
             if self.session_id:
                 logger.info("Logging into Instagram using session ID...")
-                try:
-                    cl.login_by_sessionid(self.session_id)
-                except Exception as sess_err:
-                    if self.session_file.is_file():
-                        logger.warning("Session ID failed with cached session: %s. Clearing cache...", sess_err)
-                        self.session_file.unlink(missing_ok=True)
-                        cl = Client()
-                        if self.proxy:
-                            cl.set_proxy(self.proxy)
-                        cl.login_by_sessionid(self.session_id)
-                    else:
-                        raise sess_err
+                cl.login_by_sessionid(self.session_id)
             elif self.username and self.password:
-                logger.info("Logging into Instagram as '%s'...", self.username)
-                try:
-                    cl.login(
-                        username=self.username,
-                        password=self.password,
-                        verification_code=self.verification_code,
-                    )
-                except Exception as login_err:
-                    # If old session belonged to another account or is expired, clear and retry fresh
-                    if self.session_file.is_file():
-                        logger.warning("Login failed with cached session (%s). Clearing old session and retrying fresh...", login_err)
-                        self.session_file.unlink(missing_ok=True)
-                        cl = Client()
-                        if self.proxy:
-                            cl.set_proxy(self.proxy)
-                        cl.login(
-                            username=self.username,
-                            password=self.password,
-                            verification_code=self.verification_code,
-                        )
-                    else:
-                        raise login_err
-
-                cl.dump_settings(str(self.session_file))
+                logger.info("Logging into Instagram as '%s' (initial authentication)...", self.username)
+                cl.login(
+                    username=self.username,
+                    password=self.password,
+                    verification_code=self.verification_code,
+                )
             else:
                 raise ValueError(
                     "Instagram credentials missing: provide either session_id or username & password."
                 )
 
+            # Dump settings after successful login to persist session cookies & device fingerprint
+            cl.dump_settings(str(self.session_file))
+            logger.info("✅ Saved active Instagram session to %s", self.session_file)
+
             self.client = cl
             self._logged_in = True
-            logger.info("Instagram authentication successful.")
             return self.client
 
         except Exception as e:
             self._logged_in = False
+            err_msg = str(e)
+            if "challenge_required" in err_msg.lower() or "feedback_required" in err_msg.lower():
+                logger.error("🛑 Instagram security block triggered: %s. Log in via official app/browser to verify.", err_msg)
             raise RuntimeError(f"Instagram login failed: {e}")
 
     def test_connection(self) -> bool:

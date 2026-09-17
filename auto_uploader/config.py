@@ -84,7 +84,9 @@ class PluginsConfig(BaseModel):
 class ServiceConfig(BaseModel):
     """Main service loop settings."""
     check_interval: int = 60            # seconds between checks
-    post_delay: int = 30                # delay in seconds before uploading each post
+    post_delay: int = 30                # default delay in seconds
+    post_delay_min: int = 15            # min delay in seconds before uploading post
+    post_delay_max: int = 60            # max delay in seconds before uploading post
     db_path: str = "data/uploader.db"   # SQLite state database
     temp_dir: str = "data/temp_media"   # Temporary downloaded media storage
     log_level: str = "INFO"             # DEBUG, INFO, WARNING, ERROR

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import shutil
 import time
 from pathlib import Path
@@ -173,11 +174,13 @@ class AutoUploaderEngine:
             # 2. Run plugins pipeline (anime crop, caption formatting, watermark)
             post = self.plugin_manager.apply_post_pipeline(post)
 
-            # 3. Post delay if specified
-            delay = self.config.service.post_delay
-            if delay > 0:
-                logger.info("Applying post delay (%d seconds)...", delay)
-                await asyncio.sleep(delay)
+            # 3. Post delay if specified (random variable range)
+            min_delay = getattr(self.config.service, "post_delay_min", getattr(self.config.service, "post_delay", 15))
+            max_delay = getattr(self.config.service, "post_delay_max", min_delay * 2)
+            if max_delay > 0:
+                actual_delay = random.uniform(min_delay, max(min_delay, max_delay))
+                logger.info("Applying random variable post delay (%.1f seconds)...", actual_delay)
+                await asyncio.sleep(actual_delay)
 
             # 4. Upload to Instagram
             result = self.uploader.upload_post(post)
@@ -195,7 +198,7 @@ class AutoUploaderEngine:
 
             if result.success:
                 logger.info("Successfully uploaded post %s (media_id: %s)", post.id, result.media_id)
-                self.state.mark_seen(post.id, post.source_name, status="uploaded")
+                self.state.mark_seen(post.id, post.source_name, status="uploaded", url=post.url)
                 self.state.increment_stat("published")
 
                 # If caption was stripped, increase delay for subsequent posts
@@ -327,11 +330,11 @@ class AutoUploaderEngine:
 
             # Handle initial baseline setup
             if not self.state.is_initialized() and self.config.service.initial_skip:
-                remote_ids = [p.id for p in all_candidate_posts if p.source_name != "local"]
-                if remote_ids:
-                    self.state.mark_seen_batch(remote_ids, source="baseline")
-                    self.state.increment_stat("checked", len(remote_ids))
-                    logger.info("Baseline initialized with %d remote posts.", len(remote_ids))
+                remote_items = [(p.id, p.url) for p in all_candidate_posts if p.source_name != "local"]
+                if remote_items:
+                    self.state.mark_seen_batch(remote_items, source="baseline")
+                    self.state.increment_stat("checked", len(remote_items))
+                    logger.info("Baseline initialized with %d remote posts.", len(remote_items))
                 self.state.set_initialized(True)
                 return {"total": len(all_candidate_posts), "found": 0, "uploaded": 0, "queued": 0, "baseline": True}
 

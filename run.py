@@ -94,16 +94,45 @@ def cmd_queue(args: argparse.Namespace) -> None:
         return
 
     print(f"\n--- Upload Queue ({len(rows)} entries) ---")
-    print(f"{'#':<5} {'Post ID':<22} {'Status':<10} {'Source':<10} {'Added'}")
-    print("-" * 75)
+    print(f"{'#':<5} {'Post ID':<22} {'Status':<10} {'Source':<10} {'URL / Link'}")
+    print("-" * 95)
     for i, row in enumerate(rows, 1):
-        print(f"{i:<5} {row['post_id']:<22} {row['status']:<10} {row['source_name']:<10} {row['added_at']}")
+        post_id = row["post_id"]
+        source_name = row["source_name"]
+        status = row["status"]
+        post_url = ""
+        try:
+            post_obj = engine._post_from_json(row["post_json"])
+            post_url = post_obj.url or f"https://x.com/{post_obj.author_username}/status/{post_id}"
+        except Exception:
+            post_url = f"https://x.com/i/status/{post_id}"
+        print(f"{i:<5} {post_id:<22} {status:<10} {source_name:<10} {post_url}")
 
     # Stats
     pending = engine.state.queue_size("pending")
     done = engine.state.queue_size("done")
     failed = engine.state.queue_size("failed")
     print(f"\nPending: {pending} | Done: {done} | Failed: {failed}\n")
+
+
+def cmd_history(args: argparse.Namespace) -> None:
+    """Show history of seen/uploaded posts with URLs."""
+    cfg = AppConfig.load(args.config)
+    engine = AutoUploaderEngine(cfg)
+    limit = getattr(args, "limit", 50)
+    history = engine.state.get_seen_posts_details(limit=limit)
+
+    if not history:
+        print("\n📭 No post history recorded in database.\n")
+        return
+
+    print(f"\n--- Post History (Last {len(history)} records) ---")
+    print(f"{'#':<5} {'Post ID':<22} {'Status':<10} {'Source':<10} {'URL'}")
+    print("-" * 95)
+    for i, row in enumerate(history, 1):
+        url = row.get("url") or (f"https://x.com/i/status/{row['post_id']}" if row["source"] == "twitter" else "N/A")
+        print(f"{i:<5} {row['post_id']:<22} {row['status']:<10} {row['source']:<10} {url}")
+    print()
 
 
 def cmd_test(args: argparse.Namespace) -> None:
@@ -667,18 +696,80 @@ def main():
         help="Always show interactive batch selection menu",
     )
 
+    # history
+def cmd_tui(args: argparse.Namespace) -> None:
+    """Launch interactive Rich TUI for upload control."""
+    from auto_uploader.tui import UploadTUI
+    tui = UploadTUI(config_path=args.config)
+    tui.run_menu_loop()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Instagram Auto Uploader with Anime Face-Preserving Cropping"
+    )
+    parser.add_argument(
+        "--config",
+        "-c",
+        default="config.yaml",
+        help="Path to YAML configuration file (default: config.yaml)",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
+
+    # tui
+    subparsers.add_parser("tui", help="Launch interactive Rich TUI upload control center")
+
+    # start
+    start_parser = subparsers.add_parser("start", help="Start continuous monitoring daemon")
+    start_parser.add_argument(
+        "--upload-all",
+        action="store_true",
+        help="Upload existing posts without skipping baseline",
+    )
+
+    # watch
+    subparsers.add_parser("watch", help="Watch incoming/ folder for drag-and-drop uploads")
+
+    # check
+    check_parser = subparsers.add_parser("check", help="Run a single check and upload cycle")
+    check_parser.add_argument(
+        "--upload-all",
+        action="store_true",
+        help="Upload existing posts without skipping baseline",
+    )
+
+    # seed
+    subparsers.add_parser("seed", help="Deep fetch from Twitter and populate upload queue (run once)")
+
+    # queue
+    queue_parser = subparsers.add_parser("queue", help="Show or manage the upload queue")
+    queue_sub = queue_parser.add_subparsers(dest="action")
+    queue_sub.default = "show"
+    queue_show = queue_sub.add_parser("show", help="Display queue entries")
+    queue_show.add_argument("--status", choices=["pending", "done", "failed"], help="Filter by status")
+    queue_clear = queue_sub.add_parser("clear", help="Clear queue entries")
+    queue_clear.add_argument("--status", choices=["pending", "done", "failed"], help="Only clear entries with this status")
+
+    # history
+    history_parser = subparsers.add_parser("history", help="Show history of seen/uploaded posts with URLs")
+    history_parser.add_argument("--limit", type=int, default=50, help="Max history items to display (default: 50)")
+
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        # Default to TUI if no subcommand passed
+        cmd_tui(args)
         sys.exit(0)
 
     commands = {
+        "tui": cmd_tui,
         "start": cmd_start,
         "watch": cmd_watch,
         "check": cmd_check,
         "seed": cmd_seed,
         "queue": cmd_queue,
+        "history": cmd_history,
         "test": cmd_test,
         "crop": cmd_crop,
         "stats": cmd_stats,

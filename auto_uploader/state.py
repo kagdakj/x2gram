@@ -2,7 +2,7 @@
 
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 class StateStore:
@@ -27,9 +27,16 @@ class StateStore:
                     post_id TEXT PRIMARY KEY,
                     source TEXT NOT NULL,
                     seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    status TEXT DEFAULT 'success'
+                    status TEXT DEFAULT 'success',
+                    url TEXT
                 )
             """)
+            # Ensure url column exists in existing DBs
+            cursor.execute("PRAGMA table_info(seen_posts)")
+            cols = [col[1] for col in cursor.fetchall()]
+            if "url" not in cols:
+                cursor.execute("ALTER TABLE seen_posts ADD COLUMN url TEXT")
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS upload_queue (
                     post_id TEXT PRIMARY KEY,
@@ -74,33 +81,56 @@ class StateStore:
             cursor.execute("SELECT post_id FROM seen_posts")
             return {row[0] for row in cursor.fetchall()}
 
-    def mark_seen(self, post_id: str, source: str, status: str = "success") -> None:
-        """Record post ID as seen."""
+    def mark_seen(self, post_id: str, source: str, status: str = "success", url: Optional[str] = None) -> None:
+        """Record post ID as seen with optional URL."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO seen_posts (post_id, source, status)
-                VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO seen_posts (post_id, source, status, url)
+                VALUES (?, ?, ?, ?)
                 """,
-                (str(post_id), source, status),
+                (str(post_id), source, status, url),
             )
             conn.commit()
 
-    def mark_seen_batch(self, post_ids: List[str], source: str) -> None:
-        """Record multiple post IDs in a single transaction."""
-        if not post_ids:
+    def mark_seen_batch(self, items: List[Any], source: str) -> None:
+        """Record multiple post IDs in a single transaction. items can be list of IDs or (id, url) tuples."""
+        if not items:
             return
+        batch_tuples = []
+        for item in items:
+            if isinstance(item, tuple):
+                pid, url = item
+                batch_tuples.append((str(pid), source, str(url) if url else None))
+            else:
+                batch_tuples.append((str(item), source, None))
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.executemany(
                 """
-                INSERT OR IGNORE INTO seen_posts (post_id, source, status)
-                VALUES (?, ?, 'baseline')
+                INSERT OR IGNORE INTO seen_posts (post_id, source, status, url)
+                VALUES (?, ?, 'baseline', ?)
                 """,
-                [(str(pid), source) for pid in post_ids],
+                batch_tuples,
             )
             conn.commit()
+
+    def get_seen_posts_details(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieve recent seen posts with status and saved URLs."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT post_id, source, status, seen_at, url
+                FROM seen_posts
+                ORDER BY seen_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
     def is_initialized(self) -> bool:
         """Check if the service baseline has been established."""
