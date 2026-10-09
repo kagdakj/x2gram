@@ -1,19 +1,20 @@
 """Instagram Auto Uploader.
 
-An extensible service for uploading anime pictures to Instagram with intelligent face-preserving cropping.
+Uploads X/Twitter reposts and local artwork to Instagram with face-preserving cropping.
 """
 
 from .config import AppConfig
-from .engine import AutoUploaderEngine
-from .models import MediaItem, MediaType, Post, UploadResult
+from .context import AppContext
+from .models import MediaItem, MediaType, Post, PostStatus, UploadResult
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 __all__ = [
     "AppConfig",
-    "AutoUploaderEngine",
+    "AppContext",
     "MediaItem",
     "MediaType",
     "Post",
+    "PostStatus",
     "UploadResult",
 ]

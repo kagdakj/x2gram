@@ -12,13 +12,33 @@ instagram:
   verification_code: ""              # 2FA code (if required)
   upload_timeout: 120
 
+  # Pacing of single API calls (instagrapi waits this long between requests)
+  request_delay_min: 2.0
+  request_delay_max: 5.0
+
+  # Device identity. The saved session (data/instagram_session.json) already holds a device;
+  # leave these empty to keep it. Changing them = Instagram sees the account move to a new phone.
+  # device: {}                       # e.g. {manufacturer: "Google/google", model: "Pixel 8 Pro", ...}
+  app_version: ""                    # pin an Instagram app version known to instagrapi; "" = its current default
+                                     # (an outdated one is refreshed automatically: same phone, newer app)
+  locale: ""                         # e.g. "ko_KR" (match your real location / proxy)
+  country: ""                        # e.g. "KR"
+  country_code:                      # e.g. 82
+  timezone_offset:                   # seconds, e.g. 32400 for KST
+
+  # If Instagram strips a caption, retry media_edit this often (hammering it looks spammy).
+  # The rest is repaired later with: python run.py tools fix-captions
+  caption_repair_attempts: 1
+  caption_repair_delay: 90           # seconds to wait before that attempt
+
 # 2. Twitter / X Source (Fetches posts or reposts from Twitter/X)
 twitter:
   enabled: false                     # Set true if monitoring Twitter/X reposts
   username: ""                       # Twitter handle to monitor (without @)
   auth_token: ""                     # Cookie: auth_token from x.com
   ct0: ""                            # Cookie: ct0 from x.com
-  initial_load: 20                   # Max tweets to pull per check
+  initial_load: 200                  # Posts pulled by a deep fetch (`queue fetch --deep`, F in the TUI)
+  poll_limit: 20                     # Posts pulled by each regular poll
   only_reposts: true                 # Only upload retweets/reposts (like XActions)
   binary_path: ""                    # Custom path to twitter binary if not in PATH
 
@@ -61,6 +81,23 @@ plugins:
       - "#fanart"
     max_caption_length: 2200
 
+    # Caption layout. Placeholders: {credit} {text} {source} {tags} {hashtags} {author}
+    # {author_tag} {author_name} {url} {url_plain} {post_id} {nl}
+    # Empty parts (and the blank lines around them) are removed automatically.
+    # Preview with:  python run.py tools caption --all-templates
+    templates:
+      - "{credit}{nl}{nl}{text}{nl}{nl}{source}{nl}{nl}{tags}"
+      # - "{text}{nl}{nl}by #{author_tag}{nl}{nl}{hashtags}"
+    credit_format: "Artist: {author_name} (#{author_tag}) on X"
+    source_format: "Source: {url_plain}"
+    tags_format: ".{nl}.{nl}{hashtags}"
+
+    # Variation (off by default). Choices are seeded with the post id, so retries and
+    # `tools fix-captions` always rebuild the exact same caption.
+    hashtag_count:                   # e.g. [4, 8] -> use 4-8 of the tags above, shuffled
+    source_link_probability: 1.0     # e.g. 0.5 -> only half the posts carry "Source: ..."
+    vary_templates: false            # true -> pick one of the templates above per post
+
   # Watermark Plugin
   watermark:
     enabled: false
@@ -71,14 +108,24 @@ plugins:
 
 # 5. Core Service Loop
 service:
-  check_interval: 60                 # Seconds between checks (min 15)
-  post_delay: 30                     # Seconds to wait before uploading each post (min 30s for anti-spam)
-  db_path: "data/uploader.db"        # SQLite database path for tracking seen posts
+  check_interval: 60                 # Seconds between polls (min 15)
+  post_delay_min: 15                 # Random wait before each upload, lower bound (seconds)
+  post_delay_max: 60                 # ...upper bound. Doubled automatically if Instagram strips a caption
+  uploads_per_cycle: 10              # Max uploads per daemon cycle
+  db_path: "data/uploader.db"        # SQLite state (posts, queue, history)
   temp_dir: "data/temp_media"        # Isolated temporary media storage
+  log_file: "data/uploader.log"      # Also shown in the TUI Log tab
   log_level: "INFO"                  # DEBUG, INFO, WARNING, ERROR
-  initial_skip: true                 # Skip existing posts on first run (create baseline)
+  initial_skip: true                 # First poll marks existing reposts as skipped instead of uploading them
 
   # Upload Rate Limiting & Scheduling (On/Off)
   rate_limit_enabled: false          # Set true to enforce daily limits and time intervals
-  max_posts_per_day: 10              # Maximum posts allowed per 24 hours (e.g. 5-15)
-  min_post_interval: 3600            # Minimum seconds between consecutive uploads (e.g. 3600 = 1 hour, 7200 = 2 hours)
+  max_posts_per_day: 10              # Maximum posts allowed per rolling 24 hours
+  min_post_interval: 3600            # Minimum seconds between consecutive uploads
+  action_block_cooldown: 21600       # Pause uploads this long after Instagram "feedback_required" (6h)
+
+  # Human-like schedule. All off by default; they only apply with rate_limit_enabled: true.
+  active_hours: ""                   # e.g. "10:00-23:00" - no uploads outside this window
+  interval_jitter: 0.0               # e.g. 0.8 -> wait 1.0x-1.8x min_post_interval, different every time
+  daily_limit_jitter: 0              # e.g. 1 -> max_posts_per_day +/-1, fixed per day
+  rest_day_probability: 0.0          # e.g. 0.15 -> about 15% of days upload nothing

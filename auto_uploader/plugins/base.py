@@ -78,7 +78,7 @@ class PluginManager:
             config_dict = self.plugins_config
 
         for name, plugin_cls in _PLUGIN_REGISTRY.items():
-            sub_cfg = config_dict.get(name, {})
+            sub_cfg = config_dict.get(name) or config_dict.get("custom", {}).get(name, {})
             # If sub_cfg is pydantic model
             if hasattr(sub_cfg, "model_dump"):
                 sub_cfg = sub_cfg.model_dump()

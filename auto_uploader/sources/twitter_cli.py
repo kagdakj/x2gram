@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from typing import Any, Dict, List, Tuple
 
 from ..models import MediaItem, MediaType, Post
@@ -27,7 +28,8 @@ class TwitterCliSource(BaseSource):
         self.username = str(self.config.get("username", "")).strip().lstrip("@")
         self.auth_token = str(self.config.get("auth_token", "")).strip()
         self.ct0 = str(self.config.get("ct0", "")).strip()
-        self.initial_load = int(self.config.get("initial_load", 20))
+        self.initial_load = int(self.config.get("initial_load", 200))
+        self.poll_limit = int(self.config.get("poll_limit", 20))
         self.only_reposts = bool(self.config.get("only_reposts", True))
         self.custom_binary = self.config.get("binary_path")
 
@@ -40,9 +42,13 @@ class TwitterCliSource(BaseSource):
         if binary:
             return binary
 
+        # Running as `venv/bin/python run.py` (without activating) leaves venv/bin out of PATH,
+        # so look next to the interpreter and in VIRTUAL_ENV as well.
+        candidates = [os.path.join(os.path.dirname(sys.executable), "twitter")]
         virtual_env = os.environ.get("VIRTUAL_ENV")
         if virtual_env:
-            candidate = os.path.join(virtual_env, "bin", "twitter")
+            candidates.append(os.path.join(virtual_env, "bin", "twitter"))
+        for candidate in candidates:
             if os.path.isfile(candidate):
                 return candidate
 
@@ -91,10 +97,13 @@ class TwitterCliSource(BaseSource):
 
         return process.stdout, process.stderr
 
+    def fetch(self, deep: bool = False) -> List[Post]:
+        return self.fetch_new_posts(limit=self.initial_load if deep else self.poll_limit)
+
     def test_connection(self) -> bool:
         """Verify twitter CLI can query the account."""
         try:
-            posts = self.fetch_new_posts(limit=1)
+            self.fetch_new_posts(limit=1)
             logger.info("Twitter CLI connection successful. Fetched sample posts.")
             return True
         except Exception as e:

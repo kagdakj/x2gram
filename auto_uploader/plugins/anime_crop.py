@@ -46,8 +46,7 @@ class AnimeCropPlugin(BasePlugin):
         self._detector_initialized = False
 
     def on_init(self) -> None:
-        """Attempt to load anime face detector model."""
-        self._init_detector()
+        """Model loading is deferred to the first image (torch import is slow)."""
 
     def _init_detector(self) -> None:
         if self._detector_initialized:
@@ -255,6 +254,7 @@ class AnimeCropPlugin(BasePlugin):
                 return media_item
 
             # Load image for face detection
+            self._init_detector()
             img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
             faces = self.detect_anime_faces(img_bgr)
 

@@ -1,0 +1,107 @@
+#status {
+    height: 4;
+    padding: 0 1;
+    background: $boost;
+    border-bottom: solid $primary-darken-2;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+TabPane {
+    padding: 0;
+}
+
+.toolbar {
+    height: auto;
+    padding: 0 1;
+    align-vertical: middle;
+}
+
+.toolbar Label {
+    padding: 0 1;
+}
+
+.toolbar Button {
+    margin: 0 1 0 0;
+}
+
+#queue-filter {
+    width: 26;
+}
+
+#queue-main {
+    width: 3fr;
+}
+
+#queue-table, #sync-table, #history-table {
+    height: 1fr;
+}
+
+#queue-detail {
+    width: 2fr;
+    min-width: 30;
+    border-left: solid $primary-darken-2;
+    padding: 0 1;
+}
+
+Input.small {
+    width: 10;
+}
+
+#sync-summary {
+    padding: 0 1;
+    height: auto;
+    color: $text-muted;
+}
+
+#log {
+    height: 1fr;
+}
+
+/* dialogs */
+ConfirmScreen, HelpScreen {
+    align: center middle;
+}
+
+.dialog {
+    width: 70;
+    max-width: 95%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    border: thick $primary;
+    background: $surface;
+}
+
+.dialog.help {
+    width: 90;
+}
+
+.dialog-title {
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+.dialog-body {
+    padding-bottom: 1;
+}
+
+.dialog-buttons {
+    height: auto;
+    align-horizontal: right;
+}
+
+.dialog-buttons Button {
+    margin-left: 1;
+}
+
+.help-scroll {
+    height: auto;
+    max-height: 26;
+}
+
+Screen.-narrow #queue-detail {
+    display: none;
+}

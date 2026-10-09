@@ -1,242 +1,216 @@
 # Instagram Auto Uploader from X reposts
 
-A modular, extensible background service that monitors art sources (Twitter/X reposts, local directories, etc.) and automatically uploads pictures and carousels to Instagram using [instagrapi](https://github.com/subzeroid/instagrapi).
+Watches an X/Twitter account's reposts (and an optional local `incoming/` folder) and uploads them to Instagram
+with [instagrapi](https://github.com/subzeroid/instagrapi). Images outside Instagram's aspect ratio are cropped
+around anime faces ([hysts/anime-face-detector](https://github.com/hysts/anime-face-detector)).
 
-Features an intelligent **Anime Face-Preserving Smart Cropping Plugin** powered by [hysts/anime-face-detector](https://github.com/hysts/anime-face-detector), ensuring images conform to Instagram aspect ratio limits without ever cutting off anime faces, hair, or expressions.
-
----
-
-## Key Features
-
-1. **Instagram Integration via `instagrapi`**:
-   - Supports single photos, multi-photo carousels (albums), and videos/reels.
-   - Session persistence via `session.json` to prevent repeated logins and avoid Instagram challenge flags.
-   - Supports login by password or browser `sessionid` cookie.
-   - Proxy support for secure operational environments.
-
-2. **Anime Face-Preserving Smart Cropping (Plugin)**:
-   - Powered by `anime-face-detector` (YOLOv3 / Faster R-CNN + HRNetV2).
-   - **Minimal Cropping**: If an image is already within Instagram's feed aspect ratio range `[0.8, 1.91]`, it is **not cropped at all**.
-   - If aspect ratio is outside bounds (e.g. 9:16 vertical wallpaper or ultra-wide banner), crops minimally (to 4:5 or 1.91:1) while calculating crop coordinates around detected anime faces.
-   - Preserves headroom safety margins for ahoge, hair, ears, and chin.
-   - Supports `"auto"` (minimal crop), `"4:5"` (portrait), `"1:1"` (square), or `"smart_pad"` (blur/solid background padding).
-
-3. **Decoupled, Modular Architecture**:
-   - **Sources**: Fetch posts from Twitter/X (`twitter-cli`), local folders (`incoming/`), or custom APIs.
-   - **Plugins**: Extensible pipeline (`process_media`, `process_caption`, `process_post`, `on_post_uploaded`).
-   - **Uploader**: Upload destination abstraction (`InstagramUploader`, easily extendable to other platforms).
-   - **State Store**: SQLite-backed thread-safe tracking of seen posts, initialization baselines, and execution metrics.
-   - **Engine**: Core scheduler and async worker with post delays, temporary directory isolation, and error tolerance.
-
-4. **100% English & Clean Codebase**:
-   - Free of third-party userbot dependencies (Hikka/Telethon).
-   - Fully typed, tested, and documented.
+Everything is driven from one place: a **TUI control center** (`python run.py`) or the equivalent **CLI** commands.
 
 ---
 
-## Architecture Overview
-
-```
-instagram_auto_uploader/
-├── run.py                        # CLI entrypoint (start, check, crop, test, stats)
-├── config.yaml                   # Active configuration file
-├── config.example.yaml           # Documented template configuration
-├── requirements.txt              # Project dependencies
-├── auto_uploader/
-│   ├── config.py                 # Pydantic configuration parser
-│   ├── engine.py                 # Core orchestration & scheduling service
-│   ├── models.py                 # Post, MediaItem, UploadResult models
-│   ├── state.py                  # SQLite state database (seen posts, metrics)
-│   ├── plugins/                  # Plugin pipeline
-│   │   ├── base.py               # PluginManager and BasePlugin interface
-│   │   ├── anime_crop.py         # Anime face detector & smart cropper
-│   │   ├── caption.py            # Caption cleaner, author credit, hashtags
-│   │   └── watermark.py          # Optional watermark plugin
-│   ├── sources/                  # Content sources
-│   │   ├── base.py               # BaseSource interface
-│   │   ├── twitter_cli.py        # Twitter/X repost fetcher (via twitter-cli)
-│   │   └── local_folder.py       # Local folder watcher for batch art
-│   └── uploader/                 # Upload destinations
-│       ├── base.py               # BaseUploader interface
-│       └── instagram.py          # instagrapi client implementation
-└── tests/                        # Comprehensive test suite
-    ├── test_crop.py              # Math and bounding box tests
-    ├── test_plugins.py           # Caption & plugin pipeline tests
-    └── test_state.py             # SQLite persistence tests
-```
-
----
-
-## Installation
-
-### 1. Clone Repository & Setup Environment
+## Quick start
 
 ```bash
-cd instagram_auto_uploader
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+pipx install twitter-cli            # X source
+
+cp config.example.yaml config.yaml  # fill in Instagram + X credentials
+python run.py doctor                # validate config and test logins
+python run.py                       # open the TUI
 ```
 
-### 2. Install Anime Face Detector (Recommended)
+## How it works
 
-To enable anime face detection:
+```
+ sources ──fetch──▶  posts table  ──upload──▶  Instagram
+ (X, incoming/)      queued → uploading → uploaded
+                                       ↘ failed  (retry)
+                     skipped  (first-run baseline / manually skipped)
+```
+
+1. **Fetch** polls the sources and stores new posts as `queued`.
+   On the very first poll existing reposts are stored as `skipped` so your whole history isn't uploaded at once
+   (`initial_skip`). A **deep fetch** queues the backlog (`twitter.initial_load` posts) instead.
+2. **Upload** stages media in a temp dir, runs the plugins (crop → caption → watermark) and publishes.
+   Every upload path (daemon, TUI, `queue upload`, `sync`) goes through the same publisher, so random delays,
+   daily limits and the Instagram action-block pause always apply (limits can be overridden explicitly with *force*).
+3. The **daemon** repeats fetch → upload up to `uploads_per_cycle` posts → sleep.
+4. **Sync** compares your Instagram profile with recent X reposts, marks posts it finds as uploaded,
+   and lets you queue or upload what's missing.
+
+Failed posts keep their error message and attempt count; retry them any time.
+
+## TUI
+
+`python run.py` (or `python run.py tui`)
+
+| Key | Action |
+|---|---|
+| `s` | start / stop the daemon |
+| `f` / `F` | fetch now / deep fetch |
+| `space`, `a` | select row, select all/none |
+| `u` | upload selected rows (or the row under the cursor) |
+| `r` / `k` / `delete` | retry / skip / remove selected |
+| `x` | stop the running upload batch |
+| `1`–`4` | Queue, Sync, History, Log tabs |
+| `?` | help |
+
+The Queue tab shows details and a caption preview for the highlighted post. Logs go to the Log tab and
+`data/uploader.log`.
+
+## CLI
 
 ```bash
-# Install PyTorch (CPU or CUDA version):
-pip install torch torchvision
+python run.py run                    # daemon (Ctrl+C to stop)
+python run.py run --once             # one poll + upload cycle
+python run.py run --local            # also watch incoming/
 
-# Install anime face detector:
-pip install anime-face-detector
+python run.py queue list             # queued + failed (use -s uploaded / -s skipped ...)
+python run.py queue fetch [--deep] [--dry-run]
+python run.py queue upload ID... | -i 1-3,5 | --next 2   [--force] [-y]
+python run.py queue retry [ID...]    # all failed when no IDs
+python run.py queue skip ID...
+python run.py queue remove ID...
+python run.py queue clear [-s failed]
+
+python run.py sync [--dry-run] [--select 1-3] [--queue] [--include-uploaded]
+python run.py history [--all]
+python run.py stats
+python run.py doctor [--offline]
+python run.py reset [--restore-files] [--logout]   # --logout also drops the device fingerprint
+
+python run.py tools crop art.png -o art_ig.jpg --ratio auto
+python run.py tools fix-captions --limit 30
+python run.py tools plugins
 ```
 
-> *Note: If `anime-face-detector` is not installed, the cropper gracefully falls back to center-weighted cropping.*
+### Local folder
 
-### 3. Install Twitter CLI (If using Twitter source)
+With `local.enabled: true` (or `run --local`), drop files into `incoming/`:
+
+- a single image/video → one post (`art.txt` next to it becomes the caption)
+- a folder of images → one carousel (`folder/caption.txt` for the caption)
+
+After a successful upload the files move to `data/processed/YYYY-MM-DD/`.
+
+## Staying under Instagram's radar
+
+The uploader tries to look like one phone posting at a human pace:
+
+- **One device, forever.** The saved session (`data/instagram_session.json`) holds the device fingerprint
+  (uuids, device model, user agent). When the session expires it is re-authenticated *with the same device*,
+  never replaced. `reset` keeps it too; only `reset --logout` drops it (a backup is kept).
+- **Current app version.** Instagram rejects logins from an app version it considers outdated
+  (`Your version of Instagram is out of date`). The stored session's app profile is refreshed from
+  instagrapi on load, keeping the uuids and phone model — the same phone with an updated app.
+  Inspect it with `python run.py tools session`. Keep instagrapi itself up to date.
+- **Request pacing.** `instagram.request_delay_min/max` makes instagrapi wait between individual API calls.
+- **Upload pacing.** Random delay between posts, daily cap, minimum interval, and a 6h pause when Instagram
+  answers `feedback_required`.
+- **Gentle caption repair.** If Instagram strips a caption it is retried once, then left for
+  `tools fix-captions` instead of editing the fresh post repeatedly.
+
+Optional, **off by default** (enable in `config.yaml`, they need `rate_limit_enabled: true`):
+
+| Setting | Example | Effect |
+|---|---|---|
+| `service.active_hours` | `"10:00-23:00"` | no uploads outside the window (may wrap midnight) |
+| `service.interval_jitter` | `0.8` | gaps become 1.0x–1.8x `min_post_interval` instead of fixed |
+| `service.daily_limit_jitter` | `1` | daily cap `max_posts_per_day ± 1`, fixed per day |
+| `service.rest_day_probability` | `0.15` | ~15% of days upload nothing |
+| `plugins.caption.hashtag_count` | `[4, 8]` | random subset of the hashtag pool, shuffled |
+| `plugins.caption.source_link_probability` | `0.5` | only some posts carry the `Source:` line |
+| `plugins.caption.vary_templates` | `true` | pick one of the configured templates per post |
+
+Caption randomness is seeded with the post id, so a retry rebuilds exactly the same caption.
+
+### Caption format
+
+`plugins.caption.templates` is a list of format strings; `credit_format`, `source_format` and `tags_format`
+shape the individual blocks:
+
+```yaml
+plugins:
+  caption:
+    templates:
+      - "{credit}{nl}{nl}{text}{nl}{nl}{source}{nl}{nl}{tags}"
+      - "{text}{nl}{nl}by #{author_tag}{nl}{nl}{hashtags}"
+    credit_format: "Artist: {author_name} (#{author_tag}) on X"
+    source_format: "Source: {url_plain}"
+    tags_format: ".{nl}.{nl}{hashtags}"
+```
+
+Placeholders: `{credit}` `{text}` `{source}` `{tags}` `{hashtags}` `{author}` `{author_tag}` `{author_name}`
+`{url}` `{url_plain}` `{post_id}` `{nl}`. Empty parts drop out together with the blank lines around them,
+so a template can mention every placeholder safely. With several templates, `vary_templates: true` picks one
+per post (seeded by post id); otherwise the first one is used.
+
+Preview before uploading anything:
 
 ```bash
-pipx install twitter-cli
-# or: pip install twitter-cli
+python run.py tools caption                 # a few queued posts
+python run.py tools caption 2100241060366881177 --all-templates
 ```
 
----
+If your device locale/timezone don't match the IP you connect from, set `instagram.locale`, `country`,
+`country_code` and `timezone_offset` (or use a matching `proxy`) — but pick one and never change it again.
+
+None of this makes automated reposting undetectable. Posting less is what actually helps.
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml` and configure your credentials:
+See `config.example.yaml` for every option. Secrets can also come from `.env` / environment variables
+(`.env.example`). Older configs keep working: `post_delay` is read as `post_delay_min`.
 
-```yaml
-# 1. Instagram Authentication
-instagram:
-  username: "your_instagram_username"
-  password: "your_instagram_password"
-  session_id: ""                     # Or provide sessionid cookie
-  session_file: "data/instagram_session.json"
-  proxy: ""                          # Optional HTTP/SOCKS proxy
+The v1 database (`seen_posts` + `upload_queue`) is migrated automatically on first start; the old tables are
+kept as `legacy_*`.
 
-# 2. Twitter / X Source
-twitter:
-  enabled: true
-  username: "target_twitter_account" # Without @
-  auth_token: "your_auth_token"      # From x.com cookies
-  ct0: "your_ct0_cookie"             # From x.com cookies
-  only_reposts: true                 # Upload reposts only
-  initial_load: 20
+## Project layout
 
-# 3. Anime Face Cropping Plugin
-plugins:
-  anime_crop:
-    enabled: true
-    target_aspect_ratio: "auto"      # "auto" (minimal crop), "4:5", "1:1", "1.91:1"
-    model_type: "yolov3"             # "yolov3" or "faster-rcnn"
-    device: "cpu"                    # "cpu" or "cuda"
-    confidence_threshold: 0.5
-    padding_margin_pct: 0.15         # Safety margin for hair, ears, chin
-    fallback_mode: "center"          # "center" or "smart_pad"
-
-  caption:
-    enabled: true
-    add_author_hashtag: true
-    add_source_link: true
-    custom_hashtags:
-      - "#anime"
-      - "#animeart"
-      - "#illustration"
-
-# 4. Service Settings
-service:
-  check_interval: 60                 # Seconds between polls
-  post_delay: 5                      # Seconds to wait before each post
-  initial_skip: true                 # Skip existing posts on first run
+```
+run.py                     entry point (Typer CLI, no args → TUI)
+auto_uploader/
+├── cli.py                 CLI commands (thin wrappers around services)
+├── tui/                   Textual app, widgets, dialogs
+├── context.py             builds config, store and services (lazily)
+├── store.py               SQLite: posts table + metrics, legacy migration
+├── models.py              Post, MediaItem, PostStatus, UploadResult
+├── config.py              pydantic config, .env loading
+├── services/
+│   ├── ingest.py          fetch sources → store (baseline / deep)
+│   ├── publisher.py       the only upload path
+│   ├── policy.py          delays, rate limits, action-block backoff
+│   ├── daemon.py          fetch/upload loop
+│   ├── sync.py            Instagram ↔ X comparison
+│   ├── maintenance.py     doctor, caption repair, reset
+│   ├── media.py           download / stage media
+│   └── events.py          event bus used by the TUI
+├── sources/               twitter_cli, local_folder
+├── uploader/              instagrapi wrapper
+└── plugins/               anime_crop, caption, watermark
+tests/
 ```
 
----
-
-## CLI Usage
-
-The service provides a unified CLI through `run.py`:
-
-### 1. Test Connections
-Test both Twitter and Instagram credentials:
-```bash
-python run.py test
-```
-
-### 2. Drag-and-Drop Folder Watcher (Recommended for Local Uploads)
-Watch the `incoming/` directory continuously for new images:
-```bash
-python run.py watch
-```
-- **Single Photos**: Drag `art.png` into `incoming/`. (Optional: add `art.txt` for custom caption).
-- **Carousels / Albums**: Drag a folder with multiple images into `incoming/my_album/`. All images will be uploaded together as a carousel post.
-- Uploaded files are automatically organized and moved into `data/processed/YYYY-MM-DD/`.
-
-### 3. Run Single Check & Upload
-Poll the source once, process any new posts, and upload to Instagram:
-```bash
-python run.py check
-```
-
-### 4. Start Continuous Background Daemon
-Run periodic polling loop across all enabled sources (Twitter / Local):
-```bash
-python run.py start
-```
-
-### 4. Test Anime Face Cropping on Any Image
-Test the face detector and aspect ratio cropping on a local image:
-```bash
-python run.py crop --image art.png --output art_ig.jpg --ratio auto
-```
-
-### 5. View Statistics
-```bash
-python run.py stats
-```
-
-### 6. Reset History
-Clear the seen posts database so past posts can be reprocessed:
-```bash
-python run.py reset
-```
-
-### 7. List Active Plugins
-```bash
-python run.py plugins
-```
-
----
-
-## Extending: Adding Custom Plugins
-
-Creating a new plugin takes only a few lines. Create a class inheriting from `BasePlugin` and register it:
+## Custom plugins
 
 ```python
 from auto_uploader.plugins.base import BasePlugin, register_plugin
-from auto_uploader.models import Post, MediaItem
 
-@register_plugin("my_custom_filter")
-class MyCustomFilter(BasePlugin):
-    name = "my_custom_filter"
-    description = "Logs post details and adds custom tags."
-    priority = 60
+@register_plugin("my_filter")
+class MyFilter(BasePlugin):
+    description = "Adds a footer."
+    priority = 60  # lower runs earlier
 
-    def process_caption(self, caption: str, post: Post) -> str:
-        return f"{caption}\n\nUploaded with Custom Filter!"
-
-    def process_media(self, media_item: MediaItem, post: Post) -> MediaItem:
-        # Perform image manipulation or validation here
-        return media_item
+    def process_caption(self, caption, post):
+        return f"{caption}\n\nposted by bot"
 ```
 
-Plugins can be configured directly in `config.yaml` under `plugins.<plugin_name>`.
+Import the module in `auto_uploader/plugins/__init__.py` so it registers, and configure it under
+`plugins.custom.<name>` in `config.yaml`.
 
----
-
-## Running Tests
-
-Run the test suite using pytest:
+## Tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -q
 ```

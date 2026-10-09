@@ -1,16 +1,22 @@
-# Core Dependencies
-instagrapi>=2.1.2
-Pillow>=10.0.0
+# Core
+instagrapi>=3.0.20   # 3.x ships a current Instagram app version; older ones get rejected at login
+Pillow>=12.2.0
 PyYAML>=6.0
 pydantic>=2.0.0
 aiohttp>=3.9.0
 requests>=2.31.0
 opencv-python-headless>=4.8.0
 
-# Anime Face Detection (Plugin)
-# Install for anime face-guided cropping:
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121  (or cpu)
-# pip install anime-face-detector
+# CLI / TUI
+typer>=0.12
+rich>=13.0
+textual>=1.0
+
+# Anime face detection (optional; the cropper falls back to center crop without it)
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   (or cu121)
 anime-face-detector>=0.0.3
 torch>=2.0.0
 torchvision>=0.15.0
+
+# Development
+pytest>=8.0

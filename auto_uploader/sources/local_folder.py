@@ -28,6 +28,7 @@ class LocalFolderSource(BaseSource):
     """Monitors incoming/ directory for dragged files or albums."""
 
     name: str = "local"
+    is_remote: bool = False
 
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
@@ -67,7 +68,7 @@ class LocalFolderSource(BaseSource):
                 logger.warning("Could not read caption file %s: %s", caption_path, e)
         return None
 
-    def fetch_new_posts(self, limit: int = 20) -> List[Post]:
+    def fetch_new_posts(self, limit: int = 100) -> List[Post]:
         """Scan watch_dir for both individual files and album directories."""
         posts: List[Post] = []
         if not self.watch_dir.is_dir():
