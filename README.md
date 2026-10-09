@@ -16,9 +16,27 @@ pip install -r requirements.txt
 pipx install twitter-cli            # X source
 
 cp config.example.yaml config.yaml  # fill in Instagram + X credentials
+chmod 600 config.yaml               # it holds credentials
 python run.py doctor                # validate config and test logins
 python run.py                       # open the TUI
 ```
+
+Always run inside the virtualenv (`source venv/bin/activate`, or call `venv/bin/python run.py`).
+`doctor` prints the interpreter and the instagrapi version it actually loaded — instagrapi **3.x or newer**
+is required, older releases carry an Instagram app version that the login endpoint now rejects.
+
+### Signing in
+
+Two ways, set in `config.yaml` under `instagram:`:
+
+- `username` + `password` — a normal login. Repeated attempts get the login endpoint rate-limited (HTTP 429).
+- `session_id` — the `sessionid` cookie from a browser where you are already logged in. It skips the login
+  endpoint entirely, which is the way out of a 429. It takes precedence: with it set, `password` is never used.
+  Treat it like a password — it grants full account access and bypasses 2FA.
+
+Either way the full session (cookies **and** the device fingerprint) is written to `session_file`
+(`data/instagram_session.json`). Later runs reuse it and perform no login at all, so keep that path configured
+even when using `session_id`; without it every run would invent a new device.
 
 ## How it works
 
@@ -81,7 +99,9 @@ python run.py doctor [--offline]
 python run.py reset [--restore-files] [--logout]   # --logout also drops the device fingerprint
 
 python run.py tools crop art.png -o art_ig.jpg --ratio auto
+python run.py tools caption [ID...] [--all-templates]   # preview captions, no upload
 python run.py tools fix-captions --limit 30
+python run.py tools session [--bump]                    # saved device / app version
 python run.py tools plugins
 ```
 
@@ -177,6 +197,8 @@ auto_uploader/
 ├── store.py               SQLite: posts table + metrics, legacy migration
 ├── models.py              Post, MediaItem, PostStatus, UploadResult
 ├── config.py              pydantic config, .env loading
+├── logging_setup.py       file + console/TUI logging
+├── selection.py           "1,3,5-8" parsing
 ├── services/
 │   ├── ingest.py          fetch sources → store (baseline / deep)
 │   ├── publisher.py       the only upload path
@@ -191,6 +213,26 @@ auto_uploader/
 └── plugins/               anime_crop, caption, watermark
 tests/
 ```
+
+## Troubleshooting
+
+**`Your version of Instagram is out of date`** — the running instagrapi is too old (3.x+ required), or the
+command used a different virtualenv than the one you upgraded. `python run.py doctor` prints both the
+interpreter path and the instagrapi version; compare them with `which python`. A venv copied from another
+folder keeps the original paths inside `bin/activate` and `pyvenv.cfg`, which silently activates the *other*
+environment.
+
+**`429 Too many requests` on `.../login/`** — the login endpoint is throttled after repeated attempts, not an
+account ban. Stop retrying (each try extends it) and sign in with `session_id` instead, or wait ~24h.
+
+**`login_required` / session expired** — normal after a long idle period. The stored session is re-authenticated
+with the same device; it is never deleted. If `session_id` is set and also stale, paste a fresh cookie.
+
+**`twitter CLI binary not found`** — the venv is not active. `source venv/bin/activate`, or set
+`twitter.binary_path` in the config.
+
+**`No valid media could be obtained`** — the post's media URL expired (common for queued posts older than a few
+weeks). Remove the entry and fetch the post again.
 
 ## Custom plugins
 
